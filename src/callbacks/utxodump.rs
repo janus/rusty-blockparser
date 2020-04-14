@@ -1,21 +1,20 @@
-use std::fs::{self, File, OpenOptions};
-use std::path::PathBuf;
-use std::io::{LineWriter, Write};
 use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
 use std::hash::BuildHasherDefault;
+use std::io::{LineWriter, Write};
+use std::path::PathBuf;
 
-use clap::{Arg, ArgMatches, App, SubCommand};
+use clap::{App, Arg, ArgMatches, SubCommand};
 use twox_hash::XxHash;
 
-use callbacks::Callback;
-use errors::{OpError, OpResult};
+use crate::callbacks::Callback;
+use crate::errors::{OpError, OpResult};
 
-use blockchain::proto::tx::TxOutpoint;
-use blockchain::parser::types::CoinType;
-use blockchain::proto::block::Block;
-use blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
-use blockchain::utils::csv::CsvFile;
-
+use crate::blockchain::parser::types::CoinType;
+use crate::blockchain::proto::block::Block;
+use crate::blockchain::proto::tx::TxOutpoint;
+use crate::blockchain::utils::csv::CsvFile;
+use crate::blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
 
 /// Dumps the UTXO set into a CSV file
 pub struct UTXODump {
@@ -33,10 +32,11 @@ pub struct UTXODump {
 impl UTXODump {
     fn create_writer(path: PathBuf) -> OpResult<LineWriter<File>> {
         let file = match OpenOptions::new()
-                  .write(true)
-                  .create(true)
-                  .truncate(true)
-                  .open(&path) {
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+        {
             Ok(f) => f,
             Err(err) => return Err(OpError::from(err)),
         };
@@ -51,7 +51,13 @@ impl UTXODump {
         let csv_file_path_string = csv_file_path.as_path().to_str().unwrap();
         let mut csv_file = match CsvFile::new(csv_file_path.to_owned(), b';') {
             Ok(idx) => idx,
-            Err(e) => return Err(tag_err!(e, "Unable to load UTXO CSV file {}!", csv_file_path_string)),
+            Err(e) => {
+                return Err(tag_err!(
+                    e,
+                    "Unable to load UTXO CSV file {}!",
+                    csv_file_path_string
+                ))
+            }
         };
 
         for record in csv_file.reader.records().map(|r| r.unwrap()) {
@@ -69,26 +75,30 @@ impl UTXODump {
 
 impl Callback for UTXODump {
     fn build_subcommand<'a, 'b>() -> App<'a, 'b>
-        where Self: Sized
+    where
+        Self: Sized,
     {
         SubCommand::with_name("utxodump")
             .about("Dumps the UTXO set into a CSV file")
             .version("0.1")
             .author("Michele Spagnuolo <mikispag@gmail.com>")
-            .arg(Arg::with_name("dump-folder")
-                     .help("Folder to store the CSV file")
-                     .index(1)
-                     .required(true))
+            .arg(
+                Arg::with_name("dump-folder")
+                    .help("Folder to store the CSV file")
+                    .index(1)
+                    .required(true),
+            )
     }
 
     fn new(matches: &ArgMatches) -> OpResult<Self>
-        where Self: Sized
+    where
+        Self: Sized,
     {
         let ref dump_folder = PathBuf::from(matches.value_of("dump-folder").unwrap());
         match (|| -> OpResult<Self> {
             let cb = UTXODump {
                 dump_folder: PathBuf::from(dump_folder),
-                utxo_writer: try!(UTXODump::create_writer(dump_folder.join("utxo.csv.tmp"))),
+                utxo_writer: UTXODump::create_writer(dump_folder.join("utxo.csv.tmp"))?,
                 utxo_set: Default::default(),
                 start_height: 0,
                 end_height: 0,
@@ -100,9 +110,11 @@ impl Callback for UTXODump {
         })() {
             Ok(s) => return Ok(s),
             Err(e) => {
-                return Err(tag_err!(e,
-                                    "Couldn't initialize UTXODump with folder: `{:#?}`",
-                                    dump_folder.as_path()))
+                return Err(tag_err!(
+                    e,
+                    "Couldn't initialize UTXODump with folder: `{:#?}`",
+                    dump_folder.as_path()
+                ))
             }
         }
     }
@@ -161,18 +173,24 @@ impl Callback for UTXODump {
 
         for (tx_outpoint, address) in self.utxo_set.iter() {
             self.utxo_writer
-                .write_all(format!("{};{};{}\n",
-                                   arr_to_hex_swapped(&tx_outpoint.txid),
-                                   tx_outpoint.index,
-                                   address)
-                                   .as_bytes())
+                .write_all(
+                    format!(
+                        "{};{};{}\n",
+                        arr_to_hex_swapped(&tx_outpoint.txid),
+                        tx_outpoint.index,
+                        address
+                    )
+                    .as_bytes(),
+                )
                 .unwrap();
         }
 
         // Rename temp files
-        fs::rename(self.dump_folder.as_path().join("utxo.csv.tmp"),
-                   self.dump_folder.as_path().join("utxo.csv"))
-                .expect("Unable to rename tmp file!");
+        fs::rename(
+            self.dump_folder.as_path().join("utxo.csv.tmp"),
+            self.dump_folder.as_path().join("utxo.csv"),
+        )
+        .expect("Unable to rename tmp file!");
 
         info!(target: "UTXODump [on_complete]", "Done.\nDumped all {} blocks:\n\
                                    \t-> transactions: {:9}\n\

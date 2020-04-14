@@ -1,18 +1,17 @@
 use std::fs::{self, File};
-use std::path::PathBuf;
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 
-use clap::{Arg, ArgMatches, App, SubCommand};
+use clap::{App, Arg, ArgMatches, SubCommand};
 
-use callbacks::Callback;
-use errors::{OpError, OpResult};
+use crate::callbacks::Callback;
+use crate::errors::{OpError, OpResult};
 
-use blockchain::proto::tx::{Tx, TxInput, EvaluatedTxOut};
-use blockchain::parser::types::CoinType;
-use blockchain::proto::block::Block;
-use blockchain::proto::Hashed;
-use blockchain::utils;
-
+use crate::blockchain::parser::types::CoinType;
+use crate::blockchain::proto::block::Block;
+use crate::blockchain::proto::tx::{EvaluatedTxOut, Tx, TxInput};
+use crate::blockchain::proto::Hashed;
+use crate::blockchain::utils;
 
 /// Dumps the whole blockchain into csv files
 pub struct CsvDump {
@@ -42,30 +41,34 @@ impl CsvDump {
 
 impl Callback for CsvDump {
     fn build_subcommand<'a, 'b>() -> App<'a, 'b>
-        where Self: Sized
+    where
+        Self: Sized,
     {
         SubCommand::with_name("csvdump")
             .about("Dumps the whole blockchain into CSV files")
             .version("0.1")
             .author("gcarq <michael.egger@tsn.at>")
-            .arg(Arg::with_name("dump-folder")
-                     .help("Folder to store csv files")
-                     .index(1)
-                     .required(true))
+            .arg(
+                Arg::with_name("dump-folder")
+                    .help("Folder to store csv files")
+                    .index(1)
+                    .required(true),
+            )
     }
 
     fn new(matches: &ArgMatches) -> OpResult<Self>
-        where Self: Sized
+    where
+        Self: Sized,
     {
         let ref dump_folder = PathBuf::from(matches.value_of("dump-folder").unwrap()); // Save to unwrap
         match (|| -> OpResult<Self> {
             let cap = 4000000;
             let cb = CsvDump {
                 dump_folder: PathBuf::from(dump_folder),
-                block_writer: try!(CsvDump::create_writer(cap, dump_folder.join("blocks.csv.tmp"))),
-                tx_writer: try!(CsvDump::create_writer(cap, dump_folder.join("transactions.csv.tmp"))),
-                txin_writer: try!(CsvDump::create_writer(cap, dump_folder.join("tx_in.csv.tmp"))),
-                txout_writer: try!(CsvDump::create_writer(cap, dump_folder.join("tx_out.csv.tmp"))),
+                block_writer: CsvDump::create_writer(cap, dump_folder.join("blocks.csv.tmp"))?,
+                tx_writer: CsvDump::create_writer(cap, dump_folder.join("transactions.csv.tmp"))?,
+                txin_writer: CsvDump::create_writer(cap, dump_folder.join("tx_in.csv.tmp"))?,
+                txout_writer: CsvDump::create_writer(cap, dump_folder.join("tx_out.csv.tmp"))?,
                 start_height: 0,
                 end_height: 0,
                 tx_count: 0,
@@ -76,9 +79,11 @@ impl Callback for CsvDump {
         })() {
             Ok(s) => return Ok(s),
             Err(e) => {
-                return Err(tag_err!(e,
-                                    "Couldn't initialize csvdump with folder: `{:?}`",
-                                    dump_folder.as_path()))
+                return Err(tag_err!(
+                    e,
+                    "Couldn't initialize csvdump with folder: `{:?}`",
+                    dump_folder.as_path()
+                ))
             }
         }
     }
@@ -127,11 +132,14 @@ impl Callback for CsvDump {
         // Keep in sync with c'tor
         for f in vec!["blocks", "transactions", "tx_in", "tx_out"] {
             // Rename temp files
-            fs::rename(self.dump_folder.as_path().join(format!("{}.csv.tmp", f)),
-                       self.dump_folder
-                           .as_path()
-                           .join(format!("{}-{}-{}.csv", f, self.start_height, self.end_height)))
-                    .expect("Unable to rename tmp file!");
+            fs::rename(
+                self.dump_folder.as_path().join(format!("{}.csv.tmp", f)),
+                self.dump_folder.as_path().join(format!(
+                    "{}-{}-{}.csv",
+                    f, self.start_height, self.end_height
+                )),
+            )
+            .expect("Unable to rename tmp file!");
         }
 
         info!(target: "callback", "Done.\nDumped all {} blocks:\n\
@@ -146,16 +154,18 @@ impl Block {
     #[inline]
     fn as_csv(&self, block_height: usize) -> String {
         // (@hash, height, version, blocksize, @hashPrev, @hashMerkleRoot, nTime, nBits, nNonce)
-        format!("{};{};{};{};{};{};{};{};{}\n",
-                &utils::arr_to_hex_swapped(&self.header.hash),
-                &block_height,
-                &self.header.value.version,
-                &self.blocksize,
-                &utils::arr_to_hex_swapped(&self.header.value.prev_hash),
-                &utils::arr_to_hex_swapped(&self.header.value.merkle_root),
-                &self.header.value.timestamp,
-                &self.header.value.bits,
-                &self.header.value.nonce)
+        format!(
+            "{};{};{};{};{};{};{};{};{}\n",
+            &utils::arr_to_hex_swapped(&self.header.hash),
+            &block_height,
+            &self.header.value.version,
+            &self.blocksize,
+            &utils::arr_to_hex_swapped(&self.header.value.prev_hash),
+            &utils::arr_to_hex_swapped(&self.header.value.merkle_root),
+            &self.header.value.timestamp,
+            &self.header.value.bits,
+            &self.header.value.nonce
+        )
     }
 }
 
@@ -163,11 +173,13 @@ impl Hashed<Tx> {
     #[inline]
     fn as_csv(&self, block_hash: &str) -> String {
         // (@txid, @hashBlock, version, lockTime)
-        format!("{};{};{};{}\n",
-                &utils::arr_to_hex_swapped(&self.hash),
-                &block_hash,
-                &self.value.tx_version,
-                &self.value.tx_locktime)
+        format!(
+            "{};{};{};{}\n",
+            &utils::arr_to_hex_swapped(&self.hash),
+            &block_hash,
+            &self.value.tx_version,
+            &self.value.tx_locktime
+        )
     }
 }
 
@@ -175,12 +187,14 @@ impl TxInput {
     #[inline]
     fn as_csv(&self, txid: &str) -> String {
         // (@txid, @hashPrevOut, indexPrevOut, scriptSig, sequence)
-        format!("{};{};{};{};{}\n",
-                &txid,
-                &utils::arr_to_hex_swapped(&self.outpoint.txid),
-                &self.outpoint.index,
-                &utils::arr_to_hex(&self.script_sig),
-                &self.seq_no)
+        format!(
+            "{};{};{};{};{}\n",
+            &txid,
+            &utils::arr_to_hex_swapped(&self.outpoint.txid),
+            &self.outpoint.index,
+            &utils::arr_to_hex(&self.script_sig),
+            &self.seq_no
+        )
     }
 }
 
@@ -188,11 +202,13 @@ impl EvaluatedTxOut {
     #[inline]
     fn as_csv(&self, txid: &str, index: usize) -> String {
         // (@txid, indexOut, value, @scriptPubKey, address)
-        format!("{};{};{};{};{}\n",
-                &txid,
-                &index,
-                &self.out.value,
-                &utils::arr_to_hex(&self.out.script_pubkey),
-                &self.script.address)
+        format!(
+            "{};{};{};{};{}\n",
+            &txid,
+            &index,
+            &self.out.value,
+            &utils::arr_to_hex(&self.out.script_pubkey),
+            &self.script.address
+        )
     }
 }
