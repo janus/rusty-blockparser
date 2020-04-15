@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasherDefault;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -54,6 +55,10 @@ pub struct BlockchainParser<'a> {
     chain_storage: chain::ChainStorage, /* Hash storage with the longest chain          */
     stats: WorkerStats,             /* struct for thread management & statistics    */
     t_started: std::time::Instant,  /* Start timestamp                              */
+    /// The maximum height before ending the workers
+    max_height: Option<usize>,
+    /// Bool which stops all workers.
+    kill_switch: Arc<AtomicBool>,
 }
 
 impl<'a> BlockchainParser<'a> {
@@ -73,6 +78,9 @@ impl<'a> BlockchainParser<'a> {
                 info!(target: "parser", "Parsing {} blocks with mode FullData.", chain_storage.remaining());
             }
         };
+
+        let kill_switch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let max_height = options.max_height.clone();
         BlockchainParser {
             unsorted_headers: Default::default(),
             unsorted_blocks: Default::default(),
@@ -80,15 +88,18 @@ impl<'a> BlockchainParser<'a> {
             h_workers: Vec::with_capacity(options.thread_count as usize),
             mode: parse_mode,
             options: options,
-            chain_storage: chain_storage,
+            chain_storage,
             stats: Default::default(),
             t_started: std::time::Instant::now(),
+            kill_switch,
+            max_height,
         }
     }
 
     /// Starts all workers. Needs an active mpsc channel
     pub fn start_worker(&mut self, tx_channel: mpsc::SyncSender<ParseResult>) -> OpResult<()> {
         self.t_started = std::time::Instant::now();
+        // allows callbacks to terminate the worker threads
         if self.mode == ParseMode::FullData {
             (*self.options.callback).on_start(
                 self.options.coin_type.clone(),
@@ -117,10 +128,12 @@ impl<'a> BlockchainParser<'a> {
                 return Ok(());
             }
 
+            let kill_clone = self.kill_switch.clone();
+
             // Spawn worker
             let child =
                 thread::Builder::new().name(format!("worker-{}", i)).spawn(
-                    move || match Worker::new(tx, remaining_files, coin_type, mode) {
+                    move || match Worker::new(tx, remaining_files, coin_type, mode, kill_clone) {
                         Ok(mut w) => w.process(),
                         Err(OpError {
                             kind: OpErrorKind::None,
@@ -177,6 +190,13 @@ impl<'a> BlockchainParser<'a> {
                 Err(mpsc::TryRecvError::Disconnected) => {}
             }
 
+            // check if the highest block has been reached and kill workers if so
+            if let ParseMode::FullData = self.mode {
+                if Some(self.chain_storage.get_cur_height()) >= self.max_height {
+                    self.kill_switch.store(true, Ordering::Relaxed);
+                }
+            }
+
             // Check if the next block is in unsorted HashMap
             if let Some(next_hash) = self.chain_storage.get_next() {
                 if let Some(block) = self.unsorted_blocks.remove(&next_hash) {
@@ -185,7 +205,8 @@ impl<'a> BlockchainParser<'a> {
             }
             // Check if all threads are finished
             if self.stats.n_complete_msgs == self.h_workers.len()
-                && self.chain_storage.remaining() == 0
+                && (self.chain_storage.remaining() == 0
+                    || Some(self.chain_storage.get_cur_height()) >= self.max_height)
             {
                 info!(target: "dispatch", "All threads finished.");
                 return self.on_complete();
@@ -234,7 +255,10 @@ impl<'a> BlockchainParser<'a> {
 
     /// Triggers the callback and consumes the current block
     fn on_block(&mut self, block: Block) {
-        (*self.options.callback).on_block(block, self.chain_storage.get_cur_height());
+        if self.max_height.is_none() || Some(self.chain_storage.get_cur_height()) <= self.max_height
+        {
+            (*self.options.callback).on_block(block, self.chain_storage.get_cur_height());
+        }
         self.stats.n_valid_blocks += 1;
         self.chain_storage.consume_next();
     }

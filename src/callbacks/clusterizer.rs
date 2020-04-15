@@ -147,7 +147,6 @@ pub struct Clusterizer {
 
     start_height: usize,
     end_height: usize,
-    max_height: usize,
     tx_count: u64,
     in_count: u64,
     out_count: u64,
@@ -298,13 +297,6 @@ impl Callback for Clusterizer {
                     .index(1)
                     .required(true),
             )
-            .arg(
-                Arg::with_name("max-height")
-                    .short("m")
-                    .long("max-height")
-                    .takes_value(true)
-                    .help("Stop at a specified block height"),
-            )
     }
 
     fn new(matches: &ArgMatches) -> OpResult<Self>
@@ -312,7 +304,6 @@ impl Callback for Clusterizer {
         Self: Sized,
     {
         let ref dump_folder = PathBuf::from(matches.value_of("dump-folder").unwrap());
-        let max_height = value_t!(matches, "max-height", usize).unwrap_or(0);
         match (|| -> OpResult<Self> {
             let cb = Clusterizer {
                 dump_folder: PathBuf::from(dump_folder),
@@ -337,7 +328,6 @@ impl Callback for Clusterizer {
 
                 start_height: 0,
                 end_height: 0,
-                max_height: max_height,
                 tx_count: 0,
                 in_count: 0,
                 out_count: 0,
@@ -368,10 +358,6 @@ impl Callback for Clusterizer {
 
     fn on_block(&mut self, block: Block, block_height: usize) {
         info!(target: "Clusterizer [on_block]", "Progress: block {}, {} clusters, {} transactions, {} UTXOs.", block_height, self.clusters.set_size, self.tx_count, self.utxo_set.len());
-        if self.max_height > 0 && block_height >= self.max_height {
-            debug!(target: "Clusterizer [on_block]", "Skipping block {} because max-height is set to {}.", block_height, self.max_height);
-            return;
-        }
 
         for (tx_index, tx) in block.txs.iter().enumerate() {
             trace!(target: "Clusterizer [on_block]", "tx_id: {} ({}/{}).", arr_to_hex_swapped(&tx.hash), tx_index, block.txs.len());

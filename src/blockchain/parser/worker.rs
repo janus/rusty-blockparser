@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -25,6 +26,7 @@ pub struct Worker {
     pub reader: BufReader<File>,                        // Reader for the entire blk file content
     pub mode: ParseMode, // Specifies if we should read the whole block data or just the header
     pub name: String,    // Thread name
+    kill: Arc<AtomicBool>, // kill switch indicating to end parsing
 }
 
 impl Worker {
@@ -33,6 +35,7 @@ impl Worker {
         remaining_files: Arc<Mutex<VecDeque<BlkFile>>>,
         coin_type: CoinType,
         mode: ParseMode,
+        kill: Arc<AtomicBool>,
     ) -> OpResult<Self> {
         let worker_name = String::from(transform!(thread::current().name()));
         // Grab initial blk file
@@ -48,13 +51,14 @@ impl Worker {
                 );
 
                 let w = Worker {
-                    tx_channel: tx_channel,
-                    remaining_files: remaining_files,
-                    coin_type: coin_type,
+                    tx_channel,
+                    remaining_files,
+                    coin_type,
                     blk_file: file,
-                    reader: reader,
-                    mode: mode,
+                    reader,
+                    mode,
                     name: worker_name.clone(),
+                    kill,
                 };
                 Ok(w)
             }
@@ -76,6 +80,10 @@ impl Worker {
     // Highest worker loop. Handles all thread errors
     pub fn process(&mut self) {
         loop {
+            // if the callback has completed, end the worker
+            if self.kill.load(Ordering::Relaxed) {
+                break;
+            }
             match self.process_next_block() {
                 Ok(Some(_)) => {
                     // There are still some blocks
