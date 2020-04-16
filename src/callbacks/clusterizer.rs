@@ -19,6 +19,7 @@ use crate::blockchain::proto::block::Block;
 use crate::blockchain::proto::tx::TxOutpoint;
 use crate::blockchain::utils::csv::CsvFile;
 use crate::blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
+use itertools::Itertools;
 
 /// Tarjan's Union-Find data structure.
 #[derive(RustcDecodable, RustcEncodable)]
@@ -414,6 +415,7 @@ impl Callback for Clusterizer {
                 continue;
             }
 
+            /*
             let mut tx_inputs_iter = tx_inputs.iter();
             let mut last_address = tx_inputs_iter.next().unwrap().to_owned();
             self.clusters.make_set(last_address.to_owned());
@@ -423,6 +425,14 @@ impl Callback for Clusterizer {
                     .clusters
                     .union(last_address.to_owned(), address.to_owned());
                 last_address = address.to_owned();
+            }
+            */
+
+            for combination in tx_inputs.iter().combinations(2) {
+                self.clusters.make_set(combination[0].clone());
+                let _ = self
+                    .clusters
+                    .union(combination[0].clone(), combination[1].clone());
             }
         }
 
