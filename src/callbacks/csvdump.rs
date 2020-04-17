@@ -133,7 +133,7 @@ impl Callback for CsvDump {
             .arg(
                 Arg::with_name("cluster-file")
                     .help("The .dat file corresponding to pre-processed clusters")
-                    .index(1)
+                    .takes_value(true)
                     .required(true),
             )
     }
@@ -200,7 +200,7 @@ impl Callback for CsvDump {
             // inputs
             let (total_input_value, src_cluster) = {
                 let mut total_input_value = 0;
-                let mut src_cluster = None;
+                let mut src_cluster = None; // represents invalid
                 for input in &tx.value.inputs {
                     // Ignore coinbase
                     if input.outpoint.txid == [0u8; 32] {
@@ -218,7 +218,7 @@ impl Callback for CsvDump {
                         Some((address, value)) => {
                             total_input_value += value;
 
-                            if src_cluster.is_none() {
+                            if src_cluster.is_none() && address != "invalid" {
                                 src_cluster = match self.clusters.find(address.clone()) {
                                     Some(id) => Some(id),
                                     None => {
@@ -236,7 +236,7 @@ impl Callback for CsvDump {
                     trace!(target: "Clusterizer [on_block] [TX inputs]", "Removing {:#?} from UTXO set.", tx_outpoint);
                 }
 
-                (total_input_value, src_cluster.expect("Must have a source"))
+                (total_input_value, src_cluster)
             };
 
             // Transaction outputs
@@ -248,18 +248,18 @@ impl Callback for CsvDump {
                     index: i as u32,
                 };
                 let value = output.out.value.clone() as usize;
-                let mut address = output.script.address.to_owned();
+                let address = output.script.address.to_owned();
                 let mut dst_cluster = None;
                 trace!(target: "Clusterizer [on_block] [TX outputs]", "Adding UTXO {:#?} to the UTXO set.", tx_outpoint);
                 if address.is_empty() {
-                    address = "invalid".into();
-                    self.utxo_set.insert(tx_outpoint, (address, value));
+                    self.utxo_set.insert(tx_outpoint, ("invalid".into(), value));
                 } else {
                     // get the dst cluster
                     dst_cluster =
-                        Some(self.clusters.find(address).expect(
+                        Some(self.clusters.find(address.clone()).expect(
                             "Address must be in clusters. Must clusterize with singletons",
                         ));
+                    self.utxo_set.insert(tx_outpoint, (address, value));
                 }
 
                 // get and update the balances
@@ -276,18 +276,17 @@ impl Callback for CsvDump {
 
                     let src_balance = {
                         // if we have generated coins ignore
-                        if src_cluster == 0 {
+                        if src_cluster == Some(0) {
                             0
                         } else {
                             // decrease the value
                             let src_balance = self
                                 .cluster_balances
-                                .get_mut(&Some(src_cluster))
+                                .get_mut(&src_cluster)
                                 .expect("Source cluster must always exist");
-                            if *src_balance < total_input_value {
-                                warn!("Negative value found. Bad clustering. Check block: {}, txid: {} src_cluster: {}, dst_cluster: {:?}", block_height, utils::arr_to_hex_swapped(&tx.hash), src_cluster, dst_cluster);
+                            if *src_balance < value {
+                                error!("Negative value found. Bad clustering. Check block: {}, txid: {} src_cluster: {:?}, dst_cluster: {:?}, src_balance {} value: {}", block_height, utils::arr_to_hex_swapped(&tx.hash), src_cluster, dst_cluster, *src_balance, value);
                             }
-
                             // increment the total output value
                             total_output_value += value;
 
@@ -318,13 +317,13 @@ impl Callback for CsvDump {
             let fee_paid = total_input_value - total_output_value;
             if fee_paid > 0 {
                 let src_balance = {
-                    if src_cluster == 0 {
+                    if src_cluster == Some(0) {
                         0
                     } else {
                         // decrement the fee
                         let src_balance = self
                             .cluster_balances
-                            .get_mut(&Some(src_cluster))
+                            .get_mut(&src_cluster)
                             .expect("Source cluster must always exist");
                         *src_balance -= fee_paid;
                         src_balance.clone()
@@ -383,7 +382,7 @@ struct Transaction {
     height: usize,
     timestamp: u32,
     tx_hash: [u8; 32],
-    src_cluster: usize,
+    src_cluster: Option<usize>,
     dst_cluster: Option<usize>,
     value: usize,
     src_balance: usize,
@@ -400,7 +399,10 @@ impl Transaction {
             &self.height,
             chrono::NaiveDateTime::from_timestamp(self.timestamp as i64, 0).to_string(),
             &utils::arr_to_hex_swapped(&self.tx_hash),
-            &self.src_cluster.to_string(),
+            &self
+                .src_cluster
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-1".into()),
             &self
                 .dst_cluster
                 .map(|v| v.to_string())

@@ -32,6 +32,7 @@ pub struct Clusterizer {
 
     start_height: usize,
     end_height: usize,
+    unique_addresses: HashSet<String, BuildHasherDefault<XxHash>>,
     tx_count: u64,
     in_count: u64,
     out_count: u64,
@@ -184,9 +185,8 @@ impl Callback for Clusterizer {
             )
             .arg(
                 Arg::with_name("no-singleton")
-                    .short("s")
+                    .short("x")
                     .help("Doesn't include all addresses into the clusters so that only clustered address exist in the union find")
-                    .index(1)
             )
     }
 
@@ -206,6 +206,7 @@ impl Callback for Clusterizer {
                 )?,
                 utxo_writer: Clusterizer::create_writer(dump_folder.join("utxo.csv.tmp"))?,
                 utxo_set: Default::default(),
+                unique_addresses: Default::default(),
                 clusters: {
                     let mut new_clusters: DisjointSet<String> = DisjointSet::new();
 
@@ -270,6 +271,10 @@ impl Callback for Clusterizer {
                     // Skip non-standard outputs
                     continue;
                 }
+                self.unique_addresses.insert(address.clone());
+                if !self.no_singletons {
+                    self.clusters.make_set(address.clone());
+                }
 
                 trace!(target: "Clusterizer [on_block] [TX outputs]", "Adding UTXO {:#?} to the UTXO set.", tx_outpoint);
                 self.utxo_set.insert(tx_outpoint, address);
@@ -304,18 +309,14 @@ impl Callback for Clusterizer {
 
             // Skip transactions with just one input
             if tx_inputs.len() < 2 {
-                if !self.no_singletons {
-                    for input in tx_inputs.iter() {
-                        self.clusters.make_set(input.clone());
-                    }
-                } else {
-                    trace!(target: "Clusterizer [on_block]", "Skipping transaction with one distinct input.");
-                }
+                trace!(target: "Clusterizer [on_block]", "Skipping transaction with one distinct input.");
                 continue;
             }
 
-            for input in tx_inputs.iter() {
-                self.clusters.make_set(input.clone());
+            if self.no_singletons {
+                for input in tx_inputs.iter() {
+                    self.clusters.make_set(input.clone());
+                }
             }
 
             for combination in tx_inputs.iter().combinations(2) {
@@ -344,7 +345,8 @@ impl Callback for Clusterizer {
                                    \t-> clusters:     {:9}\n\
                                    \t-> transactions: {:9}\n\
                                    \t-> inputs:       {:9}\n\
+                                   \t-> unique_addresses:       {:9}\n\
                                    \t-> outputs:      {:9}",
-             self.end_height + 1, self.clusters.set_size, self.tx_count, self.in_count, self.out_count);
+             self.end_height + 1, self.clusters.set_size, self.tx_count, self.in_count, self.unique_addresses.len(), self.out_count);
     }
 }
