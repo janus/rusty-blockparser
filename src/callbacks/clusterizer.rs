@@ -18,6 +18,7 @@ use crate::blockchain::proto::tx::TxOutpoint;
 use crate::blockchain::utils::csv::CsvFile;
 use crate::blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
 use crate::DisjointSet;
+use itertools::Itertools;
 
 /// Groups addresses into ownership clusters.
 pub struct Clusterizer {
@@ -26,6 +27,8 @@ pub struct Clusterizer {
     clusterizer_writer: LineWriter<File>,
     utxo_set: HashMap<TxOutpoint, String, BuildHasherDefault<XxHash>>,
     clusters: DisjointSet<String>,
+
+    no_singletons: bool,
 
     start_height: usize,
     end_height: usize,
@@ -192,9 +195,12 @@ impl Callback for Clusterizer {
         Self: Sized,
     {
         let ref dump_folder = PathBuf::from(matches.value_of("dump-folder").unwrap());
+        let no_singletons = matches.is_present("no-singleton");
+
         match (|| -> OpResult<Self> {
             let cb = Clusterizer {
                 dump_folder: PathBuf::from(dump_folder),
+                no_singletons,
                 clusterizer_writer: Clusterizer::create_writer(
                     dump_folder.join("clusters.csv.tmp"),
                 )?,
@@ -298,19 +304,24 @@ impl Callback for Clusterizer {
 
             // Skip transactions with just one input
             if tx_inputs.len() < 2 {
-                trace!(target: "Clusterizer [on_block]", "Skipping transaction with one distinct input.");
+                if !self.no_singletons {
+                    for input in tx_inputs.iter() {
+                        self.clusters.make_set(input.clone());
+                    }
+                } else {
+                    trace!(target: "Clusterizer [on_block]", "Skipping transaction with one distinct input.");
+                }
                 continue;
             }
 
-            let mut tx_inputs_iter = tx_inputs.iter();
-            let mut last_address = tx_inputs_iter.next().unwrap().to_owned();
-            self.clusters.make_set(last_address.to_owned());
-            for address in tx_inputs_iter {
-                self.clusters.make_set(address.to_owned());
+            for input in tx_inputs.iter() {
+                self.clusters.make_set(input.clone());
+            }
+
+            for combination in tx_inputs.iter().combinations(2) {
                 let _ = self
                     .clusters
-                    .union(last_address.to_owned(), address.to_owned());
-                last_address = address.to_owned();
+                    .union(combination[0].clone(), combination[1].clone());
             }
         }
 

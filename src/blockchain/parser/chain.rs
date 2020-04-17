@@ -21,7 +21,7 @@ pub struct ChainStorage {
     hashes: Vec<[u8; 32]>,
     hashes_len: usize,
 
-    index: usize,            // Index of the latest processed block_hash
+    pub index: usize,        // Index of the latest processed block_hash
     pub latest_blk_idx: u32, // Index of blk.dat file for the latest processed block
     pub t_created: i64,      // CreatedAt timestamp
 }

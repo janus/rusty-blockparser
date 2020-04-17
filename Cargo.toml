@@ -24,6 +24,7 @@ twox-hash       = "1.5.0"
 chrono = "0.4.11"
 dirs = "2.0.2"
 simple_logger = "1.6.0"
+itertools = "0.9.0"
 
 # The development profile, used for `cargo build`
 [profile.dev]
