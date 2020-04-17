@@ -10,6 +10,9 @@ pub mod errors;
 pub mod blockchain;
 #[macro_use]
 pub mod callbacks;
+mod types;
+
+pub use types::union::DisjointSet;
 
 use std::boxed::Box;
 use std::fs;
