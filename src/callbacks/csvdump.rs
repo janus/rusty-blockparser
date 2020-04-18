@@ -6,17 +6,13 @@ use clap::{App, Arg, ArgMatches, SubCommand};
 
 use crate::blockchain::utils::csv::CsvFile;
 use crate::callbacks::Callback;
-use crate::errors::{OpError, OpErrorKind, OpResult};
-
-use rustc_serialize::json::{Decoder, Json};
-use rustc_serialize::Decodable;
+use crate::errors::{OpError, OpResult};
 
 use crate::blockchain::parser::types::CoinType;
 use crate::blockchain::proto::block::Block;
 use crate::blockchain::proto::tx::TxOutpoint;
 use crate::blockchain::utils;
 use crate::blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
-use crate::DisjointSet;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use twox_hash::XxHash;
@@ -24,10 +20,12 @@ use twox_hash::XxHash;
 /// Dumps the whole blockchain into csv files
 pub struct CsvDump {
     // Each structure gets stored in a seperate csv file
+    resume: bool,
     dump_folder: PathBuf,
     chain_writer: LineWriter<File>,
     utxo_writer: LineWriter<File>,
-    clusters: DisjointSet<String>,
+    cluster_balance_writer: LineWriter<File>,
+    clusters: HashMap<String, usize, BuildHasherDefault<XxHash>>,
     utxo_set: HashMap<TxOutpoint, (String, usize), BuildHasherDefault<XxHash>>,
     cluster_balances: HashMap<Option<usize>, usize, BuildHasherDefault<XxHash>>,
     start_height: usize,
@@ -35,6 +33,7 @@ pub struct CsvDump {
     tx_count: u64,
     in_count: u64,
     out_count: u64,
+    last_completed_block: usize,
 }
 
 impl CsvDump {
@@ -53,7 +52,7 @@ impl CsvDump {
 
     /// Exports UTXO set to a CSV file.
     fn export_utxo_set_to_csv(&mut self) -> OpResult<usize> {
-        info!(target: "Clusterizer [export_utxo_set_to_csv]", "Exporting {} UTXOs to CSV...", self.utxo_set.len());
+        info!(target: "CsvDump [export_utxo_set_to_csv]", "Exporting {} UTXOs to CSV...", self.utxo_set.len());
 
         for (tx_outpoint, (address, value)) in self.utxo_set.iter() {
             self.utxo_writer
@@ -70,14 +69,101 @@ impl CsvDump {
                 .unwrap();
         }
 
-        info!(target: "Clusterizer [export_utxo_set_to_csv]", "Exported {} UTXOs to CSV.",
+        info!(target: "CsvDump [export_utxo_set_to_csv]", "Exported {} UTXOs to CSV.",
                        self.utxo_set.len());
         Ok(self.utxo_set.len())
     }
 
+    /// Exports Cluster balances to CSV
+    fn export_cluster_balance_to_csv(&mut self) -> OpResult<usize> {
+        let cluster_balances = self.cluster_balances.len();
+        info!(target: "CsvDump [export_cluster_balance_to_csv]", "Exporting {} balances to CSV...", cluster_balances);
+
+        for (cluster, balance) in self.cluster_balances.iter() {
+            self.cluster_balance_writer
+                .write_all(
+                    format!(
+                        "{};{};\n",
+                        cluster
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-1".into()),
+                        balance.to_string(),
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+        }
+        info!(target: "CsvDump []", "Exported {} balances to CSV.", cluster_balances);
+        Ok(cluster_balances)
+    }
+
+    fn load_cluster_balance_from_csv(
+        csv_file: PathBuf,
+    ) -> OpResult<HashMap<Option<usize>, usize, BuildHasherDefault<XxHash>>> {
+        info!(target: "CsvDump [load_cluster_balance_from_csv]", "Loading balances...");
+
+        let csv_file_path_string = csv_file.as_path().to_str().unwrap();
+        let mut csv_file = match CsvFile::new(csv_file.to_owned(), b';') {
+            Ok(idx) => idx,
+            Err(e) => {
+                return Err(tag_err!(
+                    e,
+                    "Unable to load Cluster CSV balance file {}!",
+                    csv_file_path_string
+                ))
+            }
+        };
+
+        let mut cluster_balances: HashMap<Option<usize>, usize, BuildHasherDefault<XxHash>> =
+            Default::default();
+
+        for record in csv_file.reader.records().map(|r| r.unwrap()) {
+            let cluster = {
+                if &record[0] == "-1" {
+                    None
+                } else {
+                    Some(record[0].parse::<usize>().unwrap())
+                }
+            };
+            cluster_balances.insert(cluster, record[1].parse::<usize>().unwrap());
+        }
+
+        info!(target: "CsvDump [load_cluster_balances]", "Done.");
+        Ok(cluster_balances)
+    }
+
+    /// Loads the clusters as a hashmap for fast lookups
+    fn load_cluster_as_hashmap(
+        csv_file: PathBuf,
+    ) -> OpResult<HashMap<String, usize, BuildHasherDefault<XxHash>>> {
+        info!(target: "CsvDump [load_cluster_as_hashmap]", "Loading clusters...");
+
+        let csv_file_path_string = csv_file.as_path().to_str().unwrap();
+        let mut csv_file = match CsvFile::new(csv_file.to_owned(), b';') {
+            Ok(idx) => idx,
+            Err(e) => {
+                return Err(tag_err!(
+                    e,
+                    "Unable to load Cluster CSV file {}!",
+                    csv_file_path_string
+                ))
+            }
+        };
+
+        let mut cluster_hashmap: HashMap<String, usize, BuildHasherDefault<XxHash>> =
+            Default::default();
+
+        for record in csv_file.reader.records().map(|r| r.unwrap()) {
+            cluster_hashmap.insert(record[0].into(), record[1].parse::<usize>().unwrap());
+        }
+
+        info!(target: "CsvDump [load_cluster_as_hashmap]", "Done.");
+        Ok(cluster_hashmap)
+    }
+
     /// Loads the UTXO set from an existing CSV file.
     fn load_utxo_set(&mut self) -> OpResult<usize> {
-        info!(target: "Clusterizer [load_utxo_set]", "Loading UTXO set...");
+        info!(target: "CsvDump [load_utxo_set]", "Loading UTXO set...");
 
         let csv_file_path = self.dump_folder.join("utxo.csv");
         let csv_file_path_string = csv_file_path.as_path().to_str().unwrap();
@@ -103,12 +189,39 @@ impl CsvDump {
                 // Skip non-standard outputs
                 continue;
             }
-            trace!(target: "Clusterizer [load_utxo_set]", "Adding UTXO {:#?} to the UTXO set.", tx_outpoint);
+            trace!(target: "CsvDump [load_utxo_set]", "Adding UTXO {:#?} to the UTXO set.", tx_outpoint);
             self.utxo_set.insert(tx_outpoint, (address, value));
         }
 
-        info!(target: "Clusterizer [load_utxo_set]", "Done.");
+        info!(target: "CsvDump [load_utxo_set]", "Done.");
         Ok(self.utxo_set.len())
+    }
+
+    fn rename_tmp_files(&self) {
+        // Rename temp files
+        fs::rename(
+            self.dump_folder.as_path().join("transactions.csv.tmp"),
+            self.dump_folder.as_path().join(format!(
+                "transactions-{}-{}.csv",
+                self.start_height, self.end_height
+            )),
+        )
+        .expect("Unable to rename tmp file!");
+
+        fs::rename(
+            self.dump_folder.as_path().join("utxo.csv.tmp"),
+            self.dump_folder.as_path().join("utxo.csv"),
+        )
+        .expect("Unable to rename utxo files");
+
+        fs::rename(
+            self.dump_folder.as_path().join("cluster_balances.csv.tmp"),
+            self.dump_folder.as_path().join(format!(
+                "cluster_balances-{}-{}.csv",
+                self.start_height, self.end_height
+            )),
+        )
+        .expect("Unable to rename cluster balances files");
     }
 }
 
@@ -131,10 +244,20 @@ impl Callback for CsvDump {
                     .required(true),
             )
             .arg(
-                Arg::with_name("cluster-file")
-                    .help("The .dat file corresponding to pre-processed clusters")
+                Arg::with_name("cluster-csv")
+                    .help("The csv file corresponding to pre-processed clusters")
                     .takes_value(true)
                     .required(true),
+            )
+            .arg(
+                Arg::with_name("cluster-balances-csv")
+                    .help("The csv file corresponding to past-processed balances. Required if non-resume is not set.")
+                    .takes_value(true)
+            )
+            .arg(
+                Arg::with_name("no-resume")
+                    .short("n")
+                    .help("Do not load past UTXO's and account balances"),
             )
     }
 
@@ -143,53 +266,76 @@ impl Callback for CsvDump {
         Self: Sized,
     {
         let dump_folder = PathBuf::from(matches.value_of("dump-folder").unwrap());
-        let cluster_file = PathBuf::from(matches.value_of("cluster-file").unwrap());
+        let cluster_file = PathBuf::from(matches.value_of("cluster-csv").unwrap());
+
+        let resume = !matches.is_present("no-resume");
+
+        let cluster_balances = if resume {
+            let balances_path = PathBuf::from(matches.value_of("cluster_balances-csv").unwrap());
+            CsvDump::load_cluster_balance_from_csv(balances_path).unwrap()
+        } else {
+            Default::default()
+        };
 
         let chain_writer = CsvDump::create_writer(dump_folder.join("transactions.csv.tmp"))?;
         let utxo_writer = CsvDump::create_writer(dump_folder.join("utxo.csv.tmp"))?;
+        let cluster_balance_writer =
+            CsvDump::create_writer(dump_folder.join("cluster_balances.csv.tmp"))?;
 
-        info!(target: "callback", "Loading clusters from file: {:?} ...", cluster_file);
+        info!("Loading clusters from file: {:?} ...", cluster_file);
 
+        // build cluster hashmap from the csv
+        let clusters = CsvDump::load_cluster_as_hashmap(cluster_file).unwrap();
+
+        /* Load clusters as UnionFind
         let mut file = File::open(cluster_file).map_err(|e| {
             error!(target: "callback", "Could not read cluster file: {:?} ...", e);
             OpError::new(OpErrorKind::CallbackError)
         })?;
-
-        let json = Json::from_reader(&mut file).unwrap();
-        let mut decoder = Decoder::new(json);
-        let clusters: DisjointSet<String> = Decodable::decode(&mut decoder)?;
-        info!(target: "Clusterizer [new]", "Loaded clusters: {} ...", clusters.set_size);
+            let json = Json::from_reader(&mut file).unwrap();
+            let mut decoder = Decoder::new(json);
+            let clusters: DisjointSet<String> = Decodable::decode(&mut decoder)?;
+            info!(target: "Clusterizer [new]", "Loaded clusters: {} ...", clusters.set_size);
+        */
 
         Ok(CsvDump {
+            resume,
             dump_folder,
             chain_writer,
+            cluster_balance_writer,
             utxo_writer,
             clusters,
             utxo_set: Default::default(),
-            cluster_balances: Default::default(),
+            cluster_balances,
             start_height: 0,
             end_height: 0,
             tx_count: 0,
             in_count: 0,
             out_count: 0,
+            last_completed_block: 0,
         })
     }
 
     fn on_start(&mut self, _: CoinType, block_height: usize) {
         self.start_height = block_height;
         info!(target: "callback", "Using `csvdump` with dump folder: {:?} ...", &self.dump_folder);
-        match self.load_utxo_set() {
-            Ok(utxo_count) => {
-                info!(target: "Clusterizer [on_start]", "Loaded {} UTXOs.", utxo_count);
+
+        if self.resume {
+            match self.load_utxo_set() {
+                Ok(utxo_count) => {
+                    info!(target: "CsvDump [on_start]", "Loaded {} UTXOs.", utxo_count);
+                }
+                Err(_) => {
+                    info!(target: "CsvDump [on_start]", "No previous UTXO loaded.");
+                }
             }
-            Err(_) => {
-                info!(target: "Clusterizer [on_start]", "No previous UTXO loaded.");
-            }
+        } else {
+            info!(target: "CsvDump [on_start]", "Not resuming, no data loaded");
         }
     }
 
     fn on_block(&mut self, block: Block, block_height: usize) {
-        if block_height % 1000usize == 0 {
+        if block_height % 10000usize == 0 {
             info!(target: "Csvdump [on_block]", "Progress: block {}, {} transactions", block_height, self.tx_count);
         }
 
@@ -198,9 +344,10 @@ impl Callback for CsvDump {
             self.out_count += tx.value.out_count.value;
 
             // inputs
-            let (total_input_value, src_cluster) = {
+            let (src_cluster, total_input_value) = {
                 let mut total_input_value = 0;
                 let mut src_cluster = None; // represents invalid
+                let mut total_invalid_input_value = 0;
                 for input in &tx.value.inputs {
                     // Ignore coinbase
                     if input.outpoint.txid == [0u8; 32] {
@@ -218,9 +365,15 @@ impl Callback for CsvDump {
                         Some((address, value)) => {
                             total_input_value += value;
 
+                            // if the source is invalid increment invalid sources value. These
+                            // throw of the balances of clusters
+                            if address == "invalid" {
+                                total_invalid_input_value += value;
+                            }
+
                             if src_cluster.is_none() && address != "invalid" {
-                                src_cluster = match self.clusters.find(address.clone()) {
-                                    Some(id) => Some(id),
+                                src_cluster = match self.clusters.get(&address) {
+                                    Some(id) => Some(id.clone()),
                                     None => {
                                         warn!("Address not found in cluster. Must process with singletons! Address: {}", address);
                                         panic!();
@@ -236,7 +389,15 @@ impl Callback for CsvDump {
                     trace!(target: "Clusterizer [on_block] [TX inputs]", "Removing {:#?} from UTXO set.", tx_outpoint);
                 }
 
-                (total_input_value, src_cluster)
+                // if some of the inputs where invalid, the cluster balance can't account for
+                // these. So we increment the cluster balance by these amounts.
+                if total_invalid_input_value > 0 && src_cluster.is_some() {
+                    *self
+                        .cluster_balances
+                        .get_mut(&src_cluster)
+                        .expect("Source cluster must always exist") += total_invalid_input_value;
+                }
+                (src_cluster, total_input_value)
             };
 
             // Transaction outputs
@@ -255,10 +416,12 @@ impl Callback for CsvDump {
                     self.utxo_set.insert(tx_outpoint, ("invalid".into(), value));
                 } else {
                     // get the dst cluster
-                    dst_cluster =
-                        Some(self.clusters.find(address.clone()).expect(
-                            "Address must be in clusters. Must clusterize with singletons",
-                        ));
+                    dst_cluster = Some(
+                        self.clusters
+                            .get(&address)
+                            .expect("Address must be in clusters. Must clusterize with singletons")
+                            .clone(),
+                    );
                     self.utxo_set.insert(tx_outpoint, (address, value));
                 }
 
@@ -290,7 +453,9 @@ impl Callback for CsvDump {
                             // increment the total output value
                             total_output_value += value;
 
-                            *src_balance -= value; // this will underflow
+                            src_balance
+                                .checked_sub(value)
+                                .expect("Balances should never be negative"); // this will underflow if balances are wrong and panic
                             src_balance.clone()
                         }
                     };
@@ -347,28 +512,18 @@ impl Callback for CsvDump {
         }
 
         self.tx_count += block.tx_count.value;
+        self.last_completed_block = block_height;
     }
 
-    fn on_complete(&mut self, block_height: usize) {
-        self.end_height = block_height;
+    fn on_complete(&mut self, _block_height: usize) {
+        // should fix this in the parser.. hack for the time being
+        self.end_height = self.last_completed_block;
 
         // Write UTXO set to CSV.
         let _ = self.export_utxo_set_to_csv();
-        // Rename temp files
-        fs::rename(
-            self.dump_folder.as_path().join("transactions.csv.tmp"),
-            self.dump_folder.as_path().join(format!(
-                "transactions-{}-{}.csv",
-                self.start_height, self.end_height
-            )),
-        )
-        .expect("Unable to rename tmp file!");
+        let _ = self.export_cluster_balance_to_csv();
 
-        fs::rename(
-            self.dump_folder.as_path().join("utxo.csv.tmp"),
-            self.dump_folder.as_path().join("utxo.csv"),
-        )
-        .expect("Unable to rename utxo files");
+        self.rename_tmp_files();
 
         info!(target: "callback", "Done.\nDumped all {} blocks:\n\
                                    \t-> transactions: {:9}\n\

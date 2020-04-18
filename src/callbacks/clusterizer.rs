@@ -32,7 +32,6 @@ pub struct Clusterizer {
 
     start_height: usize,
     end_height: usize,
-    unique_addresses: HashSet<String, BuildHasherDefault<XxHash>>,
     tx_count: u64,
     in_count: u64,
     out_count: u64,
@@ -206,7 +205,6 @@ impl Callback for Clusterizer {
                 )?,
                 utxo_writer: Clusterizer::create_writer(dump_folder.join("utxo.csv.tmp"))?,
                 utxo_set: Default::default(),
-                unique_addresses: Default::default(),
                 clusters: {
                     let mut new_clusters: DisjointSet<String> = DisjointSet::new();
 
@@ -252,7 +250,9 @@ impl Callback for Clusterizer {
     }
 
     fn on_block(&mut self, block: Block, block_height: usize) {
-        info!(target: "Clusterizer [on_block]", "Progress: block {}, {} clusters, {} transactions, {} UTXOs.", block_height, self.clusters.set_size, self.tx_count, self.utxo_set.len());
+        if block_height % 10000 == 0 {
+            info!(target: "Clusterizer [on_block]", "Progress: block {}, {} clusters, {} transactions, {} UTXOs.", block_height, self.clusters.set_size, self.tx_count, self.utxo_set.len());
+        }
 
         for (tx_index, tx) in block.txs.iter().enumerate() {
             trace!(target: "Clusterizer [on_block]", "tx_id: {} ({}/{}).", arr_to_hex_swapped(&tx.hash), tx_index, block.txs.len());
@@ -271,7 +271,6 @@ impl Callback for Clusterizer {
                     // Skip non-standard outputs
                     continue;
                 }
-                self.unique_addresses.insert(address.clone());
                 if !self.no_singletons {
                     self.clusters.make_set(address.clone());
                 }
@@ -345,8 +344,7 @@ impl Callback for Clusterizer {
                                    \t-> clusters:     {:9}\n\
                                    \t-> transactions: {:9}\n\
                                    \t-> inputs:       {:9}\n\
-                                   \t-> unique_addresses:       {:9}\n\
                                    \t-> outputs:      {:9}",
-             self.end_height + 1, self.clusters.set_size, self.tx_count, self.in_count, self.unique_addresses.len(), self.out_count);
+             self.end_height + 1, self.clusters.set_size, self.tx_count, self.in_count, self.out_count);
     }
 }

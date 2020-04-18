@@ -192,8 +192,10 @@ impl<'a> BlockchainParser<'a> {
 
             // check if the highest block has been reached and kill workers if so
             if let ParseMode::FullData = self.mode {
-                if Some(self.chain_storage.get_cur_height()) >= self.max_height {
-                    self.kill_switch.store(true, Ordering::Relaxed);
+                if self.max_height.is_some() {
+                    if Some(self.chain_storage.get_cur_height()) >= self.max_height {
+                        self.kill_switch.store(true, Ordering::Relaxed);
+                    }
                 }
             }
 
@@ -206,7 +208,8 @@ impl<'a> BlockchainParser<'a> {
             // Check if all threads are finished
             if self.stats.n_complete_msgs == self.h_workers.len()
                 && (self.chain_storage.remaining() == 0
-                    || Some(self.chain_storage.get_cur_height()) >= self.max_height)
+                    || (Some(self.chain_storage.get_cur_height()) >= self.max_height
+                        && self.max_height.is_some()))
             {
                 info!(target: "dispatch", "All threads finished.");
                 return self.on_complete();
