@@ -25,7 +25,9 @@ pub struct Clusterizer {
     dump_folder: PathBuf,
     utxo_writer: LineWriter<File>,
     clusterizer_writer: LineWriter<File>,
+    raw_input_writer: LineWriter<File>,
     utxo_set: HashMap<TxOutpoint, String, BuildHasherDefault<XxHash>>,
+    seen_addresses: HashSet<String, BuildHasherDefault<XxHash>>,
     clusters: DisjointSet<String>,
 
     no_singletons: bool,
@@ -165,6 +167,39 @@ impl Clusterizer {
         info!(target: "Clusterizer [load_utxo_set]", "Done.");
         Ok(self.utxo_set.len())
     }
+
+    /// Processes raw transaction inputs into union find.
+    fn process_clusters(&mut self) -> OpResult<()> {
+        info!(target: "Clusterizer [load_utxo_set]", "Processing clusters ...");
+
+        // free some RAM
+        self.utxo_set.clear();
+        self.seen_addresses.clear();
+
+        let csv_file_path = self.dump_folder.join("raw_inputs.csv.tmp");
+        let csv_file_path_string = csv_file_path.as_path().to_str().unwrap();
+        let mut csv_file = match CsvFile::new(csv_file_path.to_owned(), b';') {
+            Ok(idx) => idx,
+            Err(e) => {
+                return Err(tag_err!(
+                    e,
+                    "Unable to load UTXO CSV file {}!",
+                    csv_file_path_string
+                ))
+            }
+        };
+
+        for record in csv_file.reader.records().map(|r| r.unwrap()) {
+            if record.len() == 1 {
+                self.clusters.make_set(record[0].into());
+            } else {
+                let _ = self.clusters.union(record[0].into(), record[1].into());
+            }
+        }
+
+        info!(target: "Clusterizer [process_clusters]", "Done.");
+        Ok(())
+    }
 }
 
 impl Callback for Clusterizer {
@@ -204,7 +239,11 @@ impl Callback for Clusterizer {
                     dump_folder.join("clusters.csv.tmp"),
                 )?,
                 utxo_writer: Clusterizer::create_writer(dump_folder.join("utxo.csv.tmp"))?,
+                raw_input_writer: Clusterizer::create_writer(
+                    dump_folder.join("raw_inputs.csv.tmp"),
+                )?,
                 utxo_set: Default::default(),
+                seen_addresses: Default::default(),
                 clusters: {
                     let mut new_clusters: DisjointSet<String> = DisjointSet::new();
 
@@ -272,7 +311,12 @@ impl Callback for Clusterizer {
                     continue;
                 }
                 if !self.no_singletons {
-                    self.clusters.make_set(address.clone());
+                    if self.seen_addresses.insert(address.clone()) {
+                        self.raw_input_writer
+                            .write_all(format!("{}\n", address).as_bytes())
+                            .unwrap();
+                    }
+                    //self.clusters.make_set(address.clone());
                 }
 
                 trace!(target: "Clusterizer [on_block] [TX outputs]", "Adding UTXO {:#?} to the UTXO set.", tx_outpoint);
@@ -296,7 +340,7 @@ impl Callback for Clusterizer {
                         tx_inputs.insert(address.to_owned());
                     }
                     None => {
-                        warn!("{:#?} is not present in the UTXO set!", tx_outpoint);
+                        //warn!("{:#?} is not present in the UTXO set!", tx_outpoint);
                         continue;
                     }
                 };
@@ -319,9 +363,12 @@ impl Callback for Clusterizer {
             }
 
             for combination in tx_inputs.iter().combinations(2) {
-                let _ = self
-                    .clusters
-                    .union(combination[0].clone(), combination[1].clone());
+                self.raw_input_writer
+                    .write_all(format!("{};{}\n", combination[0], combination[1]).as_bytes())
+                    .unwrap();
+                //let _ = self
+                //    .clusters
+                //    .union(combination[0].clone(), combination[1].clone());
             }
         }
 
@@ -331,12 +378,16 @@ impl Callback for Clusterizer {
     fn on_complete(&mut self, block_height: usize) {
         self.end_height = block_height;
 
+        // Write UTXO set to CSV.
+        let _ = self.export_utxo_set_to_csv();
+
+        info!("Processing clusters");
+        self.process_clusters().unwrap();
+
         // Write clusters to DAT file.
         let _ = self.serialize_clusters();
         // Export clusters to CSV.
         let _ = self.export_clusters_to_csv();
-        // Write UTXO set to CSV.
-        let _ = self.export_utxo_set_to_csv();
         // Rename temporary files.
         let _ = self.rename_tmp_files();
 
