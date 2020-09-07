@@ -1,6 +1,6 @@
 use crate::blockchain::proto::script;
 use std::convert::{self, From};
-use std::error::{self, Error};
+use std::error::{self};
 use std::fmt;
 use std::io;
 use std::string;
@@ -114,24 +114,6 @@ impl fmt::Display for OpErrorKind {
 }
 
 impl error::Error for OpErrorKind {
-    fn description(&self) -> &str {
-        match *self {
-            OpErrorKind::IoError(ref err) => err.description(),
-            OpErrorKind::ByteOrderError(ref err) => err.description(),
-            OpErrorKind::Utf8Error(ref err) => err.description(),
-            OpErrorKind::ScriptError(ref err) => err.description(),
-            ref err @ OpErrorKind::PoisonError => err.description(),
-            ref err @ OpErrorKind::SendError => err.description(),
-            OpErrorKind::JsonError(ref err) => err,
-            OpErrorKind::ParseError => "",
-            OpErrorKind::InvalidArgsError => "",
-            OpErrorKind::CallbackError => "",
-            OpErrorKind::ValidateError => "",
-            OpErrorKind::RuntimeError => "",
-            OpErrorKind::None => "",
-        }
-    }
-
     fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             OpErrorKind::IoError(ref err) => Some(err),
@@ -183,20 +165,19 @@ impl convert::From<string::FromUtf8Error> for OpError {
 
 impl convert::From<json::EncoderError> for OpError {
     fn from(err: json::EncoderError) -> OpError {
-        OpError::new(OpErrorKind::JsonError(String::from(err.description())))
+        OpError::new(OpErrorKind::JsonError(String::from(&err.to_string())))
     }
 }
 
 impl convert::From<json::DecoderError> for OpError {
     fn from(err: json::DecoderError) -> OpError {
-        OpError::new(OpErrorKind::JsonError(String::from(err.description())))
+        OpError::new(OpErrorKind::JsonError(String::from(&err.to_string())))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error;
     use std::io;
 
     #[test]
@@ -204,12 +185,12 @@ mod tests {
         let kind = io::Error::new(io::ErrorKind::BrokenPipe, "oh no!");
         let err = OpError::from(kind);
 
-        assert_eq!(err.description(), "");
+        assert_eq!(err.to_string(), "");
         assert_eq!(format!("{}", err), "I/O Error: oh no!");
 
         let err = err.join_msg("Cannot proceed.");
 
-        assert_eq!(err.description(), "Cannot proceed.");
+        assert_eq!(err.to_string(), "Cannot proceed.");
         assert_eq!(format!("{}", err), "Cannot proceed. I/O Error: oh no!");
     }
 }
