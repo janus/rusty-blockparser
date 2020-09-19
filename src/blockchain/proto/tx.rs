@@ -5,6 +5,8 @@ use crate::blockchain::proto::varuint::VarUint;
 use crate::blockchain::proto::ToRaw;
 use crate::blockchain::utils::{self, arr_to_hex_swapped, le};
 
+use serde::{Deserialize, Serialize};
+
 /// Simple transaction struct
 /// Please note: The txid is not stored here. See Hashed.
 #[derive(Clone)]
@@ -88,7 +90,8 @@ impl ToRaw for Tx {
 }
 
 /// TxOutpoint references an existing transaction output
-#[derive(Clone, PartialEq, Eq, Hash)]
+//#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct TxOutpoint {
     pub txid: [u8; 32],
     pub index: u32, // 0-based offset within tx

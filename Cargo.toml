@@ -26,6 +26,13 @@ dirs = "2.0.2"
 simple_logger = "1.6.0"
 itertools = "0.9.0"
 
+
+rkv = "0.15.0"
+tempfile = "3"
+byteorder  = "1.3.0"
+serde = { version = "1.0.63", features = ["derive"] }
+bincode = "1.3.1"
+
 # The development profile, used for `cargo build`
 [profile.dev]
 opt-level = 3                # Controls the --opt-level the compiler builds with

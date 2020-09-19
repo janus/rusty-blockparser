@@ -14,6 +14,7 @@ use crate::errors::{OpError, OpResult};
 
 use crate::blockchain::parser::types::CoinType;
 use crate::blockchain::proto::block::Block;
+use crate::blockchain::proto::kv::Datastore;
 use crate::blockchain::proto::tx::TxOutpoint;
 use crate::blockchain::utils::csv::CsvFile;
 use crate::blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
