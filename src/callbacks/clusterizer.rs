@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::hash::BuildHasherDefault;
 use std::io::{LineWriter, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
@@ -12,22 +13,21 @@ use twox_hash::XxHash;
 use crate::callbacks::Callback;
 use crate::errors::{OpError, OpResult};
 
+use crate::blockchain::db::kv::Datastore;
 use crate::blockchain::parser::types::CoinType;
 use crate::blockchain::proto::block::Block;
-use crate::blockchain::proto::kv::Datastore;
 use crate::blockchain::proto::tx::TxOutpoint;
 use crate::blockchain::utils::csv::CsvFile;
 use crate::blockchain::utils::{arr_to_hex_swapped, hex_to_arr32_swapped};
 use crate::DisjointSet;
 use itertools::Itertools;
 
+use std::{thread, time};
+
 /// Groups addresses into ownership clusters.
 pub struct Clusterizer {
-    dump_folder: PathBuf,
-    utxo_writer: LineWriter<File>,
-    clusterizer_writer: LineWriter<File>,
-    utxo_set: HashMap<TxOutpoint, String, BuildHasherDefault<XxHash>>,
-    clusters: DisjointSet<String>,
+    utxo_set: Datastore, //HashMap<TxOutpoint, String, BuildHasherDefault<XxHash>>,
+    clusters: DisjointSet,
 
     no_singletons: bool,
 
@@ -37,7 +37,7 @@ pub struct Clusterizer {
     in_count: u64,
     out_count: u64,
 }
-
+/*
 impl Clusterizer {
     fn create_writer(path: PathBuf) -> OpResult<LineWriter<File>> {
         let file = match OpenOptions::new()
@@ -51,65 +51,66 @@ impl Clusterizer {
         };
         Ok(LineWriter::new(file))
     }
-
-    /// Serializes clusters to a file.
+}
+/// Serializes clusters to a file.
     fn serialize_clusters(&mut self) -> OpResult<usize> {
-        self.clusters.finalize();
-        info!(target: "Clusterizer [serialize_clusters]", "Serializing {} clusters to file...",
-                       self.clusters.set_size);
-        let encoded = json::encode(&self.clusters)?;
-        let temp_file_path = self
-            .dump_folder
-            .join("clusters.dat.tmp")
-            .as_path()
-            .to_owned();
-        let mut file = File::create(temp_file_path.to_owned())?;
-        file.write_all(encoded.as_bytes())?;
+               self.clusters.finalize();
+               info!(target: "Clusterizer [serialize_clusters]", "Serializing {} clusters to file...",
+                              self.clusters.set_size);
+               let encoded = json::encode(&self.clusters)?;
+               let temp_file_path = self
+                   .dump_folder
+                   .join("clusters.dat.tmp")
+                   .as_path()
+                   .to_owned();
+               let mut file = File::create(temp_file_path.to_owned())?;
+               file.write_all(encoded.as_bytes())?;
 
-        info!(target: "Clusterizer [serialize_clusters]", "Serialized {} clusters to file.",
-                       self.clusters.set_size);
-        Ok(encoded.len())
-    }
+               info!(target: "Clusterizer [serialize_clusters]", "Serialized {} clusters to file.",
+                              self.clusters.set_size);
+               Ok(encoded.len())
+           }
 
-    /// Exports clusters to a CSV file.
-    fn export_clusters_to_csv(&mut self) -> OpResult<usize> {
-        self.clusters.finalize();
-        info!(target: "Clusterizer [export_clusters_to_csv]", "Exporting {} clusters to CSV...",
-                       self.clusters.set_size);
+           /// Exports clusters to a CSV file.
+           fn export_clusters_to_csv(&mut self) -> OpResult<usize> {
+               self.clusters.finalize();
+               info!(target: "Clusterizer [export_clusters_to_csv]", "Exporting {} clusters to CSV...",
+                              self.clusters.set_size);
 
-        for (address, tag) in &self.clusters.map {
-            self.clusterizer_writer
-                .write_all(format!("{};{}\n", address, self.clusters.parent[*tag]).as_bytes())
-                .unwrap();
-        }
+               for (address, tag) in &self.clusters.map {
+                   self.clusterizer_writer
+                       .write_all(format!("{};{}\n", address, self.clusters.parent[*tag]).as_bytes())
+                       .unwrap();
+               }
 
-        info!(target: "Clusterizer [export_clusters_to_csv]", "Exported {} clusters to CSV.",
-                       self.clusters.set_size);
-        Ok(self.clusters.set_size)
-    }
+               info!(target: "Clusterizer [export_clusters_to_csv]", "Exported {} clusters to CSV.",
+                              self.clusters.set_size);
+               Ok(self.clusters.set_size)
+           }
 
-    /// Exports UTXO set to a CSV file.
-    fn export_utxo_set_to_csv(&mut self) -> OpResult<usize> {
-        info!(target: "Clusterizer [export_utxo_set_to_csv]", "Exporting {} UTXOs to CSV...", self.utxo_set.len());
+       /// Exports UTXO set to a CSV file.
+       fn export_utxo_set_to_csv(&mut self) -> OpResult<usize> {
+           info!(target: "Clusterizer [export_utxo_set_to_csv]", "Exporting {} UTXOs to CSV...", self.utxo_set.len());
 
-        for (tx_outpoint, address) in self.utxo_set.iter() {
-            self.utxo_writer
-                .write_all(
-                    format!(
-                        "{};{};{}\n",
-                        arr_to_hex_swapped(&tx_outpoint.txid),
-                        tx_outpoint.index,
-                        address
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-        }
+           for (tx_outpoint, address) in self.utxo_set.iter() {
+               self.utxo_writer
+                   .write_all(
+                       format!(
+                           "{};{};{}\n",
+                           arr_to_hex_swapped(&tx_outpoint.txid),
+                           tx_outpoint.index,
+                           address
+                       )
+                       .as_bytes(),
+                   )
+                   .unwrap();
+           }
 
-        info!(target: "Clusterizer [export_utxo_set_to_csv]", "Exported {} UTXOs to CSV.",
-                       self.utxo_set.len());
-        Ok(self.utxo_set.len())
-    }
+           info!(target: "Clusterizer [export_utxo_set_to_csv]", "Exported {} UTXOs to CSV.",
+                          self.utxo_set.len());
+           Ok(self.utxo_set.len())
+       }
+
 
     /// Renames temporary files.
     fn rename_tmp_files(&mut self) -> OpResult<usize> {
@@ -167,7 +168,7 @@ impl Clusterizer {
         Ok(self.utxo_set.len())
     }
 }
-
+ */
 impl Callback for Clusterizer {
     fn build_subcommand<'a, 'b>() -> App<'a, 'b>
     where
@@ -194,32 +195,25 @@ impl Callback for Clusterizer {
     where
         Self: Sized,
     {
-        let ref dump_folder = PathBuf::from(matches.value_of("dump-folder").unwrap());
         let no_singletons = matches.is_present("no-singleton");
+        let file_name = "union";
+        let db_name = "union_db";
+        let path_file = format!("./blockparser/{}", file_name);
+        let path = Path::new(&path_file);
+
+        let file_name_utxo = "utxo";
+        let db_name_utxo = "utxo_db";
+        let path_file_utxo = format!("./blockparser/{}", file_name_utxo);
+        let path_utxo = Path::new(&path_file_utxo);
 
         match (|| -> OpResult<Self> {
             let cb = Clusterizer {
-                dump_folder: PathBuf::from(dump_folder),
                 no_singletons,
-                clusterizer_writer: Clusterizer::create_writer(
-                    dump_folder.join("clusters.csv.tmp"),
-                )?,
-                utxo_writer: Clusterizer::create_writer(dump_folder.join("utxo.csv.tmp"))?,
-                utxo_set: Default::default(),
+                utxo_set: Datastore::new(file_name_utxo, db_name_utxo)?,
                 clusters: {
-                    let mut new_clusters: DisjointSet<String> = DisjointSet::new();
-
-                    if let Ok(mut file) = File::open(dump_folder.join("clusters.dat")) {
-                        let json = Json::from_reader(&mut file).unwrap();
-                        let mut decoder = Decoder::new(json);
-                        let clusters: DisjointSet<String> = Decodable::decode(&mut decoder)?;
-                        info!(target: "Clusterizer [new]", "Resuming from saved clusters.");
-                        new_clusters = clusters;
-                    }
-
+                    let new_clusters: DisjointSet = DisjointSet::new(file_name, db_name)?;
                     new_clusters
                 },
-
                 start_height: 0,
                 end_height: 0,
                 tx_count: 0,
@@ -231,23 +225,15 @@ impl Callback for Clusterizer {
             Ok(s) => return Ok(s),
             Err(e) => Err(tag_err!(
                 e,
-                "Couldn't initialize Clusterizer with folder: `{:?}`",
-                dump_folder.as_path()
+                "Couldn't open Clusterizer with  database: `{:?}`",
+                path
             )),
         }
     }
 
     fn on_start(&mut self, _: CoinType, block_height: usize) {
         self.start_height = block_height;
-        info!(target: "Clusterizer [on_start]", "Using `Clusterizer` with dump folder {:?} and start block {}...", &self.dump_folder, self.start_height);
-        match self.load_utxo_set() {
-            Ok(utxo_count) => {
-                info!(target: "Clusterizer [on_start]", "Loaded {} UTXOs.", utxo_count);
-            }
-            Err(_) => {
-                info!(target: "Clusterizer [on_start]", "No previous UTXO loaded.");
-            }
-        }
+        info!(target: "Clusterizer [on_start]", "Using start block {}...", self.start_height);
     }
 
     fn on_block(&mut self, block: Block, block_height: usize) {
@@ -277,7 +263,16 @@ impl Callback for Clusterizer {
                 }
 
                 trace!(target: "Clusterizer [on_block] [TX outputs]", "Adding UTXO {:#?} to the UTXO set.", tx_outpoint);
-                self.utxo_set.insert(tx_outpoint, address);
+                match self.utxo_set.insert(tx_outpoint.clone(), address.clone()) {
+                    Err(_) => {
+                        let ten_millis = time::Duration::from_millis(60);
+                        thread::sleep(ten_millis);
+                        self.utxo_set.insert(tx_outpoint, address).unwrap();
+                    }
+                    Ok(_) => {
+                        self.utxo_set.increment_size();
+                    }
+                };
             }
 
             let mut tx_inputs: HashSet<String, BuildHasherDefault<XxHash>> = Default::default();
@@ -316,6 +311,8 @@ impl Callback for Clusterizer {
             if self.no_singletons {
                 for input in tx_inputs.iter() {
                     self.clusters.make_set(input.clone());
+                    info!(target: "Clusterizer [block]", "Progress: block");
+                    println!("Address {}", input.clone());
                 }
             }
 
@@ -331,16 +328,16 @@ impl Callback for Clusterizer {
 
     fn on_complete(&mut self, block_height: usize) {
         self.end_height = block_height;
-
-        // Write clusters to DAT file.
-        let _ = self.serialize_clusters();
-        // Export clusters to CSV.
-        let _ = self.export_clusters_to_csv();
-        // Write UTXO set to CSV.
-        let _ = self.export_utxo_set_to_csv();
-        // Rename temporary files.
-        let _ = self.rename_tmp_files();
-
+        /*
+                // Write clusters to DAT file.
+                let _ = self.serialize_clusters();
+                // Export clusters to CSV.
+                let _ = self.export_clusters_to_csv();
+                // Write UTXO set to CSV.
+                let _ = self.export_utxo_set_to_csv();
+                // Rename temporary files.
+                let _ = self.rename_tmp_files();
+        */
         info!(target: "Clusterizer [on_complete]", "Done.\nProcessed all {} blocks:\n\
                                    \t-> clusters:     {:9}\n\
                                    \t-> transactions: {:9}\n\

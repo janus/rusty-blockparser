@@ -1,4 +1,5 @@
 use crate::blockchain::proto::script;
+use rkv;
 use std::convert::{self, From};
 use std::error::{self};
 use std::fmt;
@@ -84,6 +85,7 @@ pub enum OpErrorKind {
     Utf8Error(string::FromUtf8Error),
     ScriptError(script::ScriptError),
     JsonError(String),
+    StoreError(String),
     InvalidArgsError,
     CallbackError,
     ValidateError,
@@ -101,6 +103,7 @@ impl fmt::Display for OpErrorKind {
             OpErrorKind::Utf8Error(ref err) => write!(f, "Utf8 Conversion Error: {}", err),
             OpErrorKind::ScriptError(ref err) => write!(f, "Script Error: {}", err),
             OpErrorKind::JsonError(ref err) => write!(f, "Json Error: {}", err),
+            OpErrorKind::StoreError(ref err) => write!(f, "Database Error: {}", err),
             ref err @ OpErrorKind::PoisonError => write!(f, "Threading Error: {}", err),
             ref err @ OpErrorKind::SendError => write!(f, "Sync Error: {}", err),
             OpErrorKind::ParseError => write!(f, "Parsing Error"),
@@ -172,6 +175,12 @@ impl convert::From<json::EncoderError> for OpError {
 impl convert::From<json::DecoderError> for OpError {
     fn from(err: json::DecoderError) -> OpError {
         OpError::new(OpErrorKind::JsonError(String::from(&err.to_string())))
+    }
+}
+
+impl convert::From<rkv::StoreError> for OpError {
+    fn from(err: rkv::StoreError) -> OpError {
+        OpError::new(OpErrorKind::StoreError(String::from(&err.to_string())))
     }
 }
 
